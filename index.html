@@ -22,6 +22,8 @@
 import { initializeApp }   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
 import { getFirestore, collection, addDoc, query, where, orderBy, getDocs, Timestamp, limit }
   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, signOut }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
 // ═══════════════════════════════════════════════════════════
 //  🔧 FIREBASE CONFIG
@@ -29,7 +31,6 @@ import { getFirestore, collection, addDoc, query, where, orderBy, getDocs, Times
 const firebaseConfig = {
   apiKey:            "AIzaSyAMYMT_I2mBrmcTzHyf9fKpy7urlcFHGos",
   authDomain:        "asistencia-fe374.firebaseapp.com",
-  databaseURL:       "https://asistencia-fe374-default-rtdb.firebaseio.com",
   projectId:         "asistencia-fe374",
   storageBucket:     "asistencia-fe374.firebasestorage.app",
   messagingSenderId: "474568980229",
@@ -40,30 +41,27 @@ const firebaseConfig = {
 //  📍 BASES
 // ═══════════════════════════════════════════════════════════
 const BASES = {
-  base1: { nombre:"Base 1 — Cerro Colorado", lat:-16.349293, lng:-71.583577, radio:500 },
-  base2: { nombre:"Base 2 — Cerro Colorado", lat:-16.368231, lng:-71.577286, radio:500 }
+  base1: { nombre:"Base MISAGI",  lat:-16.349293, lng:-71.583577, radio:150 },
+  base2: { nombre:"Base SERVOSA", lat:-16.368231, lng:-71.577286, radio:150 }
 };
 
 // ═══════════════════════════════════════════════════════════
 //  👷 USUARIOS  (cambia los PINs antes de distribuir)
 // ═══════════════════════════════════════════════════════════
+// PINs almacenados como SHA-256 — el DNI nunca aparece en texto plano
 const USUARIOS = [
-  { id:"U001", nombre:"Amachi Reyes, Max J.",              cargo:"Personal", pin:"75944310" },
-  { id:"U002", nombre:"Arapa Choquehuanca, Luis Miguel",   cargo:"Personal", pin:"46557013" },
-  { id:"U003", nombre:"Bartra Juarez, Mateo Martin",       cargo:"Personal", pin:"75896549" },
-  { id:"U004", nombre:"Farfan Ayamamani, Victor Vicente",  cargo:"Personal", pin:"43178559" },
-  { id:"U005", nombre:"Flores Aragon, Wilisman",           cargo:"Personal", pin:"74927463" },
-  { id:"U006", nombre:"Huamani Quispe, Shirley Marly",     cargo:"Personal", pin:"75277582" },
-  { id:"U007", nombre:"Kana Huallpa, Rene Elmer",          cargo:"Personal", pin:"46743191" },
-  { id:"U008", nombre:"Mamani Lopez, Yury Franchest",      cargo:"Personal", pin:"44306843" },
-  { id:"U009", nombre:"Mamani Parqui, Mayda Julia",        cargo:"Personal", pin:"76242021" },
-  { id:"U010", nombre:"Merma Condori, Rosa Luz",           cargo:"Personal", pin:"74364653" },
-  { id:"U011", nombre:"Quispe Yanque, Sandra Milagros",    cargo:"Personal", pin:"70472267" },
-  { id:"U012", nombre:"Quispe Acosta, Roger Alexander",    cargo:"Personal", pin:"72650147" },
+  { id:"U001", nombre:"Amachi Reyes, Max J.",           cargo:"Personal", pinHash:"290b55fde0166215afb3a3a74c6ef2dd763d180e9bdfb3d3a38e25b84e17da78" },
+  { id:"U003", nombre:"Bartra Juarez, Mateo Martin",    cargo:"Personal", pinHash:"f4a2397e96bc28bab06a7a754c3c7e5e34f5f0e5e5c65f01bc79fc40d7b5bcb4" },
+  { id:"U005", nombre:"Flores Aragon, Wilisman",        cargo:"Personal", pinHash:"0310aaab0743779b28669fa4a02f7f8bef53b5c19df4a3f1db1ac8aeb43a2a9a" },
+  { id:"U006", nombre:"Huamani Quispe, Shirley Marly",  cargo:"Personal", pinHash:"187e009f3831a7f4c2416fe91e8c56a897bdb03ddad5e14d0fb1f5b67bc8cc04" },
+  { id:"U010", nombre:"Merma Condori, Rosa Luz",        cargo:"Personal", pinHash:"065d12a306639ed89f699c90ead8e37d8e6c2cfcff20a02e73c8cd5a8b6cac7b" },
+  { id:"U011", nombre:"Quispe Yanque, Sandra Milagros", cargo:"Personal", pinHash:"9be3cc130d14711e462535c9503b07a39f1c01f3d68783afed5b7e2c44a6e2a2" },
+  { id:"U012", nombre:"Quispe Acosta, Roger Alexander", cargo:"Personal", pinHash:"3f5fd78705eeac63a839ba2a3af91ac7d5a8b34be4c7a4c4a2c0a00e8f4e07d2" },
 ];
 
 // Contraseña panel admin
-const ADMIN_PASS = "misagi2024";
+// Credenciales admin — validadas contra Firebase Authentication
+// Ya no están en el código fuente
 
 // Cooldown entre marcajes en el MISMO dispositivo (minutos)
 const COOLDOWN_MIN = 10;
@@ -83,8 +81,9 @@ function getDeviceId() {
 const DEVICE_ID = getDeviceId();
 
 // ═══════════════════════════════════════════════════════════
-const app = initializeApp(firebaseConfig);
-const db  = getFirestore(app);
+const app  = initializeApp(firebaseConfig);
+const db   = getFirestore(app);
+const auth = getAuth(app);
 
 // ── Utilidades ──────────────────────────────────────────────
 function haversine(lat1,lng1,lat2,lng2){
@@ -114,7 +113,7 @@ function formatFecha(ts){
 }
 function shake(id){ const e=document.getElementById(id); e.classList.add("shake"); setTimeout(()=>e.classList.remove("shake"),500); }
 const $=id=>document.getElementById(id);
-const screens=["login-screen","pin-screen","main-screen","hist-screen","admin-screen"];
+const screens=["login-screen","pin-screen","main-screen","hist-screen","admin-screen","admin-login-screen"];
 function showScreen(id){ screens.forEach(s=>$(s).classList.add("hidden")); $(id).classList.remove("hidden"); }
 
 // ── Estado ──────────────────────────────────────────────────
@@ -246,8 +245,15 @@ document.querySelectorAll(".pin-btn[data-digit]").forEach(btn=>{
 $("pin-btn-del").addEventListener("click",()=>{ pinBuffer=pinBuffer.slice(0,-1); updatePinDots(); });
 $("pin-back").addEventListener("click",()=>{ pinBuffer=""; showScreen("login-screen"); });
 
-function validatePin(){
-  if(pinBuffer===currentUser.pin){
+async function validatePin(){
+  // Hashear lo que ingresó el usuario con SHA-256 (Web Crypto API)
+  const encoder = new TextEncoder();
+  const data = encoder.encode(pinBuffer);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  const hashHex = hashArray.map(b => b.toString(16).padStart(2,"0")).join("");
+
+  if(hashHex === currentUser.pinHash){
     pinBuffer="";
     $("welcome-name").textContent=currentUser.nombre.split(",")[0];
     $("welcome-cargo").textContent=currentUser.cargo;
@@ -390,25 +396,57 @@ async function loadHistorial(){
 
 // ── Admin ────────────────────────────────────────────────────
 $("btn-admin-link").addEventListener("click",()=>{
-  $("admin-pass-input").value=""; $("admin-pass-error").textContent="";
-  $("modal-admin-pass").classList.remove("hidden");
-  setTimeout(()=>$("admin-pass-input").focus(),100);
+  $("admin-login-user").value="";
+  $("admin-login-pass").value="";
+  $("admin-login-error").textContent="";
+  showScreen("admin-login-screen");
+  setTimeout(()=>$("admin-login-user").focus(),100);
 });
-$("btn-admin-pass-cancel").addEventListener("click",()=>$("modal-admin-pass").classList.add("hidden"));
-$("btn-admin-pass-ok").addEventListener("click",()=>{
-  if($("admin-pass-input").value===ADMIN_PASS){
-    $("modal-admin-pass").classList.add("hidden");
-    // Mostrar info de vinculación de ESTE dispositivo
-    const vinc=getVinculacion();
-    $("admin-vinculacion").innerHTML=vinc
+
+$("btn-admin-login-back").addEventListener("click",()=>showScreen("main-screen"));
+
+$("btn-admin-login-ok").addEventListener("click", async ()=>{
+  const email = $("admin-login-user").value.trim();
+  const pass  = $("admin-login-pass").value;
+  const btn   = $("btn-admin-login-ok");
+  const errEl = $("admin-login-error");
+
+  if(!email || !pass){ errEl.textContent="Completa todos los campos."; return; }
+
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span> Verificando…`;
+  errEl.textContent = "";
+
+  try{
+    await signInWithEmailAndPassword(auth, email, pass);
+    // Login exitoso — Firebase verificó las credenciales
+    const vinc = getVinculacion();
+    $("admin-vinculacion").innerHTML = vinc
       ? `Este dispositivo está vinculado a <b>${vinc.nombre}</b> (desde ${new Date(vinc.since).toLocaleDateString("es-PE")}). <button onclick="desvincularDispositivo()" style="background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.4);color:#fca5a5;border-radius:6px;padding:.2rem .6rem;cursor:pointer;font-size:.75rem;font-family:inherit;margin-left:.5rem">Desvincular</button>`
       : `<span style="color:var(--text2)">Este dispositivo no está vinculado a nadie todavía.</span>`;
-    $("admin-device-id").textContent=`ID de este dispositivo: ${DEVICE_ID}`;
+    $("admin-device-id").textContent = `ID de este dispositivo: ${DEVICE_ID}`;
     showScreen("admin-screen");
     loadAdminView();
-  } else { $("admin-pass-error").textContent="Contraseña incorrecta."; shake("modal-admin-pass"); }
+  } catch(e){
+    const msgs = {
+      "auth/user-not-found":    "Usuario no encontrado.",
+      "auth/wrong-password":    "Contraseña incorrecta.",
+      "auth/invalid-email":     "Email inválido.",
+      "auth/too-many-requests": "Demasiados intentos. Espera unos minutos.",
+      "auth/invalid-credential":"Credenciales incorrectas."
+    };
+    errEl.textContent = msgs[e.code] || "Error: " + e.message;
+    shake("admin-login-card");
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> Ingresar al Panel`;
+  }
 });
-$("btn-back-admin").addEventListener("click",()=>showScreen("main-screen"));
+
+// Enter en campos de login admin
+$("admin-login-pass").addEventListener("keydown", e=>{ if(e.key==="Enter") $("btn-admin-login-ok").click(); });
+$("admin-login-user").addEventListener("keydown", e=>{ if(e.key==="Enter") $("admin-login-pass").focus(); });
+$("btn-back-admin").addEventListener("click", async ()=>{ try{ await signOut(auth); }catch(_){} showScreen("main-screen"); });
 $("btn-filter-admin").addEventListener("click",()=>loadAdminView());
 $("btn-export-csv").addEventListener("click",()=>exportCSV());
 
@@ -462,6 +500,62 @@ async function loadAdminView(){
     });
   }catch(e){ loading.style.display="none"; tbody.innerHTML=`<tr><td colspan="8" style="color:#ef4444">${e.message}</td></tr>`; }
 }
+
+// ── VER AUSENTES ────────────────────────────────────────────
+$("btn-ver-ausentes").addEventListener("click", async ()=>{
+  const fecha = $("ausentes-fecha").value;
+  if(!fecha){ alert("Selecciona una fecha"); return; }
+
+  const btn = $("btn-ver-ausentes");
+  btn.disabled = true;
+  btn.innerHTML = `<span class="spinner"></span>`;
+
+  const result = $("ausentes-result");
+  result.style.display = "none";
+  result.innerHTML = "";
+
+  try{
+    // Traer todos los registros del día seleccionado
+    const q = query(collection(db,"asistencia"), orderBy("timestamp","desc"));
+    const snap = await getDocs(q);
+
+    // Quiénes marcaron ese día
+    const marcaronSet = new Set();
+    snap.forEach(doc=>{
+      const d = doc.data();
+      const recDate = d.timestamp.toDate().toISOString().slice(0,10);
+      if(recDate === fecha) marcaronSet.add(d.userId);
+    });
+
+    // Comparar contra lista completa de usuarios
+    const ausentes = USUARIOS.filter(u => !marcaronSet.has(u.id));
+    const presentes = USUARIOS.filter(u => marcaronSet.has(u.id));
+
+    result.style.display = "flex";
+
+    // Header resumen
+    const fechaLabel = new Date(fecha+"T12:00:00").toLocaleDateString("es-PE",{weekday:"long",day:"2-digit",month:"long",year:"numeric"});
+    result.innerHTML = `<div style="font-size:.8rem;color:var(--text2);padding-bottom:.25rem;border-bottom:1px solid var(--border);margin-bottom:.25rem">${fechaLabel}</div>`;
+
+    if(ausentes.length === 0){
+      result.innerHTML += `<div style="background:rgba(2,137,86,.1);border:1px solid rgba(2,137,86,.3);border-radius:8px;padding:.75rem 1rem;font-size:.82rem;color:var(--green-light)">✅ Todos los trabajadores marcaron asistencia este día.</div>`;
+    } else {
+      result.innerHTML += `<div style="font-size:.75rem;font-weight:700;color:#fca5a5;text-transform:uppercase;letter-spacing:.04em;margin-top:.25rem">❌ No marcaron (${ausentes.length})</div>`;
+      ausentes.forEach(u=>{
+        result.innerHTML += `<div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:8px;padding:.6rem .9rem;font-size:.82rem;color:#fca5a5">✕ ${u.nombre}</div>`;
+      });
+      result.innerHTML += `<div style="font-size:.75rem;font-weight:700;color:var(--green-light);text-transform:uppercase;letter-spacing:.04em;margin-top:.5rem">✅ Sí marcaron (${presentes.length})</div>`;
+      presentes.forEach(u=>{
+        result.innerHTML += `<div style="background:rgba(2,137,86,.08);border:1px solid rgba(2,137,86,.25);border-radius:8px;padding:.6rem .9rem;font-size:.82rem;color:var(--green-light)">✓ ${u.nombre}</div>`;
+      });
+    }
+  }catch(e){
+    result.style.display = "flex";
+    result.innerHTML = `<div style="color:#ef4444;font-size:.8rem">${e.message}</div>`;
+  }
+  btn.disabled = false;
+  btn.innerHTML = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></svg> Ver ausentes`;
+});
 
 function exportCSV(){
   if(!adminData.length) return;
@@ -658,8 +752,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
   <div class="divider">Bases registradas</div>
   <div class="bases-grid">
-    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 1 — Cerro Colorado</div><div class="base-radio">Radio 500 m</div></div>
-    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 2 — Cerro Colorado</div><div class="base-radio">Radio 500 m</div></div>
+    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base MISAGI</div><div class="base-radio">Radio 150 m</div></div>
+    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base SERVOSA</div><div class="base-radio">Radio 150 m</div></div>
   </div>
 </div>
 
@@ -713,8 +807,8 @@ tr:hover td{background:rgba(255,255,255,.02)}
   <div class="card" style="display:flex;flex-direction:column;gap:.85rem">
     <div style="font-size:.7rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">Bases activas</div>
     <div class="bases-grid">
-      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 1</div><div class="base-radio">500 m · -16.3493</div></div>
-      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 2</div><div class="base-radio">500 m · -16.3682</div></div>
+      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base MISAGI</div><div class="base-radio">150 m · -16.3493</div></div>
+      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base SERVOSA</div><div class="base-radio">150 m · -16.3682</div></div>
     </div>
   </div>
   <div class="marcaje-row">
@@ -775,6 +869,19 @@ tr:hover td{background:rgba(255,255,255,.02)}
     ⚠️ Las filas en rojo indican <b>un mismo Device ID</b> usado para marcar a 3 o más trabajadores distintos — posible fraude de asistencia.
   </div>
 
+  <!-- Sección Ausentes -->
+  <div class="card" style="display:flex;flex-direction:column;gap:.75rem">
+    <div style="font-size:.7rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em">¿Quién no vino? — Ausentes del día</div>
+    <div style="display:flex;gap:.6rem;align-items:center">
+      <input type="date" id="ausentes-fecha" style="flex:1;font-size:.8rem;padding:.55rem .75rem">
+      <button id="btn-ver-ausentes" class="btn btn-primary" style="width:auto;padding:.6rem 1rem;font-size:.82rem;white-space:nowrap">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+        Ver ausentes
+      </button>
+    </div>
+    <div id="ausentes-result" style="display:none;flex-direction:column;gap:.4rem"></div>
+  </div>
+
   <div class="card" style="display:flex;flex-direction:column;gap:.75rem">
     <div style="font-size:.7rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em">Filtros</div>
     <div class="filters">
@@ -812,15 +919,50 @@ tr:hover td{background:rgba(255,255,255,.02)}
   </div>
 </div>
 
-<!-- ═══ MODAL: Admin pass ═══ -->
-<div id="modal-admin-pass" class="modal-overlay hidden">
-  <div id="modal-admin-pass-box" class="modal-box">
-    <div><div class="modal-title">🔒 Acceso Admin</div><div class="modal-sub">Ingresa la contraseña de administrador</div></div>
-    <input id="admin-pass-input" type="password" placeholder="Contraseña" autocomplete="off">
-    <div id="admin-pass-error"></div>
-    <div class="modal-btns">
-      <button id="btn-admin-pass-cancel" class="btn btn-secondary">Cancelar</button>
-      <button id="btn-admin-pass-ok" class="btn btn-primary">Ingresar</button>
+<!-- ═══ ADMIN LOGIN SCREEN ═══ -->
+<div id="admin-login-screen" class="screen hidden">
+  <div class="header">
+    <div class="logo">M</div>
+    <div class="header-text" style="flex:1"><h1>MISAGI S.A.C.</h1><p>Panel Administrador</p></div>
+    <button id="btn-admin-login-back" class="btn-ghost">Volver</button>
+  </div>
+
+  <div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:1.25rem">
+    <div id="admin-login-card" class="card" style="display:flex;flex-direction:column;gap:1.25rem">
+      <div>
+        <div style="font-size:1.3rem;font-weight:800;background:linear-gradient(135deg,#60a5fa,var(--blue-light));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text">
+          🔐 Acceso Restringido
+        </div>
+        <div style="font-size:.8rem;color:var(--text2);margin-top:.3rem">Solo para administradores de MISAGI S.A.C.</div>
+      </div>
+
+      <div>
+        <label for="admin-login-user">Correo electrónico</label>
+        <input id="admin-login-user" type="text" placeholder="correo@misagi.com" autocomplete="off" autocapitalize="none">
+      </div>
+
+      <div>
+        <label for="admin-login-pass">Contraseña</label>
+        <div style="position:relative">
+          <input id="admin-login-pass" type="password" placeholder="Contraseña" autocomplete="off" style="padding-right:3rem">
+          <button id="toggle-admin-pass" onclick="
+            const i=document.getElementById('admin-login-pass');
+            i.type=i.type==='password'?'text':'password';
+            this.textContent=i.type==='password'?'👁':'🙈';
+          " style="position:absolute;right:.75rem;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;font-size:1rem;padding:0">👁</button>
+        </div>
+      </div>
+
+      <div id="admin-login-error" style="font-size:.78rem;color:var(--error);min-height:1rem"></div>
+
+      <button id="btn-admin-login-ok" class="btn btn-primary">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Ingresar al Panel
+      </button>
+    </div>
+
+    <div style="text-align:center;font-size:.72rem;color:var(--text2)">
+      Acceso registrado y auditado · MISAGI S.A.C.
     </div>
   </div>
 </div>
