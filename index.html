@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>MISAGI — Asistencia</title>
+<link rel="manifest" href="manifest.json">
+<script>
+  // Registrar Service Worker (PWA)
+  if ("serviceWorker" in navigator) {
+    window.addEventListener("load", () => {
+      navigator.serviceWorker.register("./sw.js")
+        .then(reg => console.log("SW registrado:", reg.scope))
+        .catch(err => console.warn("SW error:", err));
+    });
+  }
+</script>
+
+<script type="module">
+import { initializeApp }   from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, addDoc, query, where, orderBy, getDocs, Timestamp, limit }
+  from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+// ═══════════════════════════════════════════════════════════
+//  🔧 FIREBASE CONFIG
+// ═══════════════════════════════════════════════════════════
+const firebaseConfig = {
+  apiKey:            "AIzaSyAMYMT_I2mBrmcTzHyf9fKpy7urlcFHGos",
+  authDomain:        "asistencia-fe374.firebaseapp.com",
+  databaseURL:       "https://asistencia-fe374-default-rtdb.firebaseio.com",
+  projectId:         "asistencia-fe374",
+  storageBucket:     "asistencia-fe374.firebasestorage.app",
+  messagingSenderId: "474568980229",
+  appId:             "1:474568980229:web:da58bd6d67460eb3fea96c"
+};
+
+// ═══════════════════════════════════════════════════════════
+//  📍 BASES
+// ═══════════════════════════════════════════════════════════
+const BASES = {
+  base1: { nombre:"Base 1 — Cerro Colorado", lat:-16.349293, lng:-71.583577, radio:500 },
+  base2: { nombre:"Base 2 — Cerro Colorado", lat:-16.368231, lng:-71.577286, radio:500 }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  👷 USUARIOS  (cambia los PINs antes de distribuir)
+// ═══════════════════════════════════════════════════════════
+const USUARIOS = [
+  { id:"U001", nombre:"Amachi Reyes, Max J.",              cargo:"Personal", pin:"75944310" },
+  { id:"U002", nombre:"Arapa Choquehuanca, Luis Miguel",   cargo:"Personal", pin:"46557013" },
+  { id:"U003", nombre:"Bartra Juarez, Mateo Martin",       cargo:"Personal", pin:"75896549" },
+  { id:"U004", nombre:"Farfan Ayamamani, Victor Vicente",  cargo:"Personal", pin:"43178559" },
+  { id:"U005", nombre:"Flores Aragon, Wilisman",           cargo:"Personal", pin:"74927463" },
+  { id:"U006", nombre:"Huamani Quispe, Shirley Marly",     cargo:"Personal", pin:"75277582" },
+  { id:"U007", nombre:"Kana Huallpa, Rene Elmer",          cargo:"Personal", pin:"46743191" },
+  { id:"U008", nombre:"Mamani Lopez, Yury Franchest",      cargo:"Personal", pin:"44306843" },
+  { id:"U009", nombre:"Mamani Parqui, Mayda Julia",        cargo:"Personal", pin:"76242021" },
+  { id:"U010", nombre:"Merma Condori, Rosa Luz",           cargo:"Personal", pin:"74364653" },
+  { id:"U011", nombre:"Quispe Yanque, Sandra Milagros",    cargo:"Personal", pin:"70472267" },
+  { id:"U012", nombre:"Quispe Acosta, Roger Alexander",    cargo:"Personal", pin:"72650147" },
+];
+
+// Contraseña panel admin
+const ADMIN_PASS = "misagi2024";
+
+// Cooldown entre marcajes en el MISMO dispositivo (minutos)
+const COOLDOWN_MIN = 10;
+
+// ═══════════════════════════════════════════════════════════
+//  🔑 DEVICE ID  — se genera una sola vez y vive en localStorage
+// ═══════════════════════════════════════════════════════════
+function getDeviceId() {
+  let id = localStorage.getItem("misagi_device_id");
+  if (!id) {
+    id = "DEV-" + Math.random().toString(36).substring(2,8).toUpperCase()
+             + "-" + Date.now().toString(36).toUpperCase();
+    localStorage.setItem("misagi_device_id", id);
+  }
+  return id;
+}
+const DEVICE_ID = getDeviceId();
+
+// ═══════════════════════════════════════════════════════════
+const app = initializeApp(firebaseConfig);
+const db  = getFirestore(app);
+
+// ── Utilidades ──────────────────────────────────────────────
+function haversine(lat1,lng1,lat2,lng2){
+  const R=6371000,dLat=(lat2-lat1)*Math.PI/180,dLng=(lng2-lng1)*Math.PI/180;
+  const a=Math.sin(dLat/2)**2+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R*2*Math.asin(Math.sqrt(a));
+}
+function detectarDispositivo(){
+  const ua=navigator.userAgent,plat=navigator.platform||"Desconocido";
+  let tipo="Desktop";
+  if(/Android/i.test(ua)) tipo="Android";
+  else if(/iPhone|iPad/i.test(ua)) tipo="iOS";
+  const m=ua.match(/(iPhone[\w\s]+|iPad[\w\s]+|SM-[A-Z0-9]+|Pixel \d+|Redmi[^\s;)]+|Mi \d+[^\s;)]*)/i);
+  return { tipo, modelo:m?m[1]:plat, ua:ua.substring(0,100) };
+}
+function baseCercana(lat,lng){
+  for(const [id,b] of Object.entries(BASES)){
+    const dist=haversine(lat,lng,b.lat,b.lng);
+    if(dist<=b.radio) return{id,...b,distancia:Math.round(dist)};
+  }
+  return null;
+}
+function formatFecha(ts){
+  if(!ts) return"—";
+  const d=ts.toDate?ts.toDate():new Date(ts);
+  return d.toLocaleString("es-PE",{timeZone:"America/Lima",day:"2-digit",month:"2-digit",year:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+}
+function shake(id){ const e=document.getElementById(id); e.classList.add("shake"); setTimeout(()=>e.classList.remove("shake"),500); }
+const $=id=>document.getElementById(id);
+const screens=["login-screen","pin-screen","main-screen","hist-screen","admin-screen"];
+function showScreen(id){ screens.forEach(s=>$(s).classList.add("hidden")); $(id).classList.remove("hidden"); }
+
+// ── Estado ──────────────────────────────────────────────────
+let currentUser=null;
+
+// ═══════════════════════════════════════════════════════════
+//  📍 BANNER GPS
+// ═══════════════════════════════════════════════════════════
+async function checkGeoPermission(){
+  if(!navigator.permissions) return;
+  try{
+    const res=await navigator.permissions.query({name:"geolocation"});
+    updateGeoBanner(res.state);
+    res.onchange=()=>updateGeoBanner(res.state);
+  }catch(_){}
+}
+function updateGeoBanner(state){
+  const b=$("geo-banner");
+  if(state==="denied"){
+    b.className="geo-banner geo-denied";
+    b.innerHTML=`<span class="geo-icon">⚠️</span><div><b>GPS bloqueado</b><br>Toca el 🔒 en la barra del navegador → <b>Permitir ubicación</b>. Sin esto no podrás marcar.</div>`;
+    b.style.display="flex";
+  } else if(state==="granted"){
+    b.className="geo-banner geo-ok";
+    b.innerHTML=`<span class="geo-icon">✅</span> GPS activado correctamente`;
+    b.style.display="flex";
+    setTimeout(()=>b.style.display="none",3000);
+  } else { b.style.display="none"; }
+}
+checkGeoPermission();
+
+// ── Poblar select ────────────────────────────────────────────
+USUARIOS.forEach(u=>{
+  const o=document.createElement("option");
+  o.value=u.id; o.textContent=u.nombre;
+  $("user-select").appendChild(o);
+});
+
+// ═══════════════════════════════════════════════════════════
+//  🔐 ESTRATEGIA 1: Vinculación dispositivo ↔ usuario
+// ═══════════════════════════════════════════════════════════
+function getVinculacion(){ try{ return JSON.parse(localStorage.getItem("misagi_vinculacion")||"null"); }catch(_){return null;} }
+function setVinculacion(userId,nombre){ localStorage.setItem("misagi_vinculacion",JSON.stringify({userId,nombre,since:Date.now()})); }
+
+// Admin puede desvincular desde el panel
+window.desvincularDispositivo=function(){
+  localStorage.removeItem("misagi_vinculacion");
+  $("admin-vinculacion").innerHTML=`<span style="color:var(--green-light)">✓ Dispositivo desvinculado. Recarga la app.</span>`;
+};
+
+// ═══════════════════════════════════════════════════════════
+//  ⏱️ ESTRATEGIA 2: Cooldown
+// ═══════════════════════════════════════════════════════════
+// ── Cooldown verificado contra timestamp de FIRESTORE (no hora local) ──────
+async function checkCooldownFirebase(){
+  try{
+    const q = query(
+      collection(db, "asistencia"),
+      where("deviceId", "==", DEVICE_ID),
+      orderBy("timestamp", "desc"),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    if(snap.empty) return 0; // nunca marcó — sin cooldown
+
+    const lastTs = snap.docs[0].data().timestamp; // Timestamp de Firestore (servidor)
+    const lastMs = lastTs.toMillis();              // milisegundos UTC del servidor
+    const nowMs  = Timestamp.now().toMillis();     // milisegundos UTC del servidor también
+    const diffMin = (nowMs - lastMs) / 1000 / 60;
+
+    return diffMin < COOLDOWN_MIN ? Math.ceil(COOLDOWN_MIN - diffMin) : 0;
+  }catch(e){
+    console.warn("checkCooldownFirebase error:", e);
+    return 0; // en caso de error no bloquea
+  }
+}
+function setCooldown(){ /* vacía — el cooldown ahora se lee de Firestore, no localStorage */ }
+
+// ═══════════════════════════════════════════════════════════
+//  LOGIN → verificar vinculación → PIN
+// ═══════════════════════════════════════════════════════════
+$("btn-login").addEventListener("click", async ()=>{
+  const uid=$("user-select").value;
+  if(!uid) return shake("login-card");
+
+  // ── Estrategia 1: ¿ya hay vinculación en este celular?
+  const vinc=getVinculacion();
+  if(vinc && vinc.userId!==uid){
+    showBlockModal(
+      "📱 Dispositivo vinculado",
+      `Este celular está vinculado a <b>${vinc.nombre}</b>.<br><br>No puedes marcar por otra persona desde este dispositivo.<br><small style="color:var(--text2)">Contacta al administrador si necesitas desvincular.</small>`
+    );
+    return;
+  }
+
+  // ── Estrategia 2: cooldown verificado en Firestore (inmune a cambio de hora)
+  $("btn-login").disabled=true;
+  $("btn-login").innerHTML=`<span class="spinner"></span> Verificando…`;
+  const espera = await checkCooldownFirebase();
+  $("btn-login").disabled=false;
+  $("btn-login").innerHTML=`<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Continuar`;
+  if(espera>0){
+    showBlockModal(
+      "⏱️ Espera requerida",
+      `Debes esperar <b>${espera} min</b> antes de registrar otra asistencia en este dispositivo.<br><small style="color:var(--text2)">Verificado en servidor — cambiar la hora del celular no funciona.</small>`
+    );
+    return;
+  }
+
+  currentUser=USUARIOS.find(u=>u.id===uid);
+  $("pin-user-name").textContent=currentUser.nombre;
+  $("pin-dots").querySelectorAll(".dot").forEach(d=>d.classList.remove("filled"));
+  $("pin-error").textContent="";
+  showScreen("pin-screen");
+});
+
+// ── PIN pad ──────────────────────────────────────────────────
+let pinBuffer="";
+function updatePinDots(){ $("pin-dots").querySelectorAll(".dot").forEach((d,i)=>d.classList.toggle("filled",i<pinBuffer.length)); }
+
+document.querySelectorAll(".pin-btn[data-digit]").forEach(btn=>{
+  btn.addEventListener("click",()=>{
+    if(pinBuffer.length>=8) return;
+    pinBuffer+=btn.dataset.digit;
+    updatePinDots();
+    if(pinBuffer.length===8) validatePin();
+  });
+});
+$("pin-btn-del").addEventListener("click",()=>{ pinBuffer=pinBuffer.slice(0,-1); updatePinDots(); });
+$("pin-back").addEventListener("click",()=>{ pinBuffer=""; showScreen("login-screen"); });
+
+function validatePin(){
+  if(pinBuffer===currentUser.pin){
+    pinBuffer="";
+    $("welcome-name").textContent=currentUser.nombre.split(",")[0];
+    $("welcome-cargo").textContent=currentUser.cargo;
+    $("result-card").className="result-card hidden";
+    showScreen("main-screen");
+  } else {
+    $("pin-error").textContent="PIN incorrecto. Intenta de nuevo.";
+    shake("pin-card");
+    pinBuffer=""; updatePinDots();
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  ✅ MARCAJE — Ingreso / Salida
+// ═══════════════════════════════════════════════════════════
+$("btn-ingreso").addEventListener("click",()=>ejecutarMarcaje("INGRESO"));
+$("btn-salida").addEventListener("click",()=>ejecutarMarcaje("SALIDA"));
+
+async function ejecutarMarcaje(tipo){
+  const btnI=$("btn-ingreso"), btnS=$("btn-salida");
+  btnI.disabled=btnS.disabled=true;
+  btnI.innerHTML=`<span class="spinner"></span>`;
+  btnS.innerHTML=`<span class="spinner"></span>`;
+  $("result-card").className="result-card hidden";
+
+  if(!navigator.geolocation){ showResult({ok:false,msg:"Este dispositivo no soporta geolocalización."}); resetBtns(); return; }
+
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const {latitude:lat,longitude:lng,accuracy}=pos.coords;
+
+    // Anti mock-location
+    if(accuracy===0||accuracy<2){
+      showResult({ok:false,msg:"⚠️ Ubicación sospechosa (precisión 0 m). Desactiva apps de ubicación falsa."}); resetBtns(); return;
+    }
+
+    const base=baseCercana(lat,lng);
+    const disp=detectarDispositivo();
+    const ahora=Timestamp.now();
+
+    if(!base){
+      const dists=Object.entries(BASES).map(([,b])=>({nombre:b.nombre,dist:Math.round(haversine(lat,lng,b.lat,b.lng))})).sort((a,b)=>a.dist-b.dist);
+      showResult({ok:false,msg:"No estás dentro de ninguna base registrada.",extra:`Más cercana: ${dists[0].nombre} — ${dists[0].dist} m de distancia`,lat,lng,accuracy});
+      resetBtns(); return;
+    }
+
+    try{
+      // ── Estrategia 3: guardamos DEVICE_ID en Firestore (silencioso)
+      await addDoc(collection(db,"asistencia"),{
+        userId:     currentUser.id,
+        nombre:     currentUser.nombre,
+        cargo:      currentUser.cargo,
+        tipo,
+        baseId:     base.id,
+        baseNombre: base.nombre,
+        distancia:  base.distancia,
+        lat,lng,accuracy,
+        timestamp:  ahora,
+        dispositivo:disp,
+        deviceId:   DEVICE_ID   // ← "chivato silencioso"
+      });
+
+      // ── Estrategia 1: vincular este dispositivo al usuario
+      setVinculacion(currentUser.id, currentUser.nombre);
+
+      // ── Estrategia 2: activar cooldown
+      setCooldown();
+
+      showResult({ok:true,tipo,base,lat,lng,accuracy,dispositivo:disp});
+    }catch(e){
+      showResult({ok:false,msg:`Error al guardar: ${e.message}`});
+    }
+    resetBtns();
+  },
+  err=>{
+    const msgs={1:"Permiso de GPS denegado.",2:"Señal GPS no disponible. Sal al aire libre.",3:"Tiempo agotado. Intenta de nuevo."};
+    showResult({ok:false,msg:msgs[err.code]||err.message});
+    resetBtns();
+  },
+  {enableHighAccuracy:true,timeout:20000,maximumAge:0});
+}
+
+function resetBtns(){
+  $("btn-ingreso").disabled=false; $("btn-salida").disabled=false;
+  $("btn-ingreso").innerHTML=`<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg> Marcar Ingreso`;
+  $("btn-salida").innerHTML=`<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg> Marcar Salida`;
+}
+
+function showResult({ok,tipo,base,lat,lng,accuracy,dispositivo,msg,extra}){
+  const card=$("result-card");
+  card.className=`result-card ${ok?"success":"error"}`;
+  const hora=new Date().toLocaleTimeString("es-PE",{timeZone:"America/Lima"});
+  const tipoColor=tipo==="INGRESO"?"#03b371":"#f59e0b";
+  const mapsUrl=lat?`https://maps.google.com/?q=${lat},${lng}`:"";
+  card.innerHTML=ok?`
+    <div class="rc-icon">✓</div>
+    <div class="rc-title">¡${tipo} registrado!</div>
+    <span class="rc-badge" style="background:${tipoColor}22;border-color:${tipoColor}55;color:${tipoColor}">${tipo}</span>
+    <div class="rc-detail"><b>Base:</b> ${base.nombre}</div>
+    <div class="rc-detail"><b>Distancia al centro:</b> ${base.distancia} m</div>
+    <div class="rc-detail"><b>Precisión GPS:</b> ±${Math.round(accuracy)} m</div>
+    <div class="rc-detail"><b>Dispositivo:</b> ${dispositivo.tipo} · ${dispositivo.modelo}</div>
+    <div class="rc-detail"><b>Hora Lima:</b> ${hora}</div>
+    ${mapsUrl?`<a href="${mapsUrl}" target="_blank" class="rc-map-link">📍 Ver en mapa</a>`:""}
+  `:`
+    <div class="rc-icon">✕</div>
+    <div class="rc-msg">${msg}</div>
+    ${extra?`<div class="rc-detail" style="margin-top:.3rem;color:var(--text)">${extra}</div>`:""}
+    ${mapsUrl?`<div class="rc-detail"><b>Tu posición:</b> ${lat.toFixed(6)}, ${lng.toFixed(6)}</div><a href="${mapsUrl}" target="_blank" class="rc-map-link">📍 Ver en mapa</a>`:""}
+  `;
+  card.classList.remove("hidden");
+}
+
+// ── Historial personal ───────────────────────────────────────
+$("btn-historial").addEventListener("click",async()=>{ showScreen("hist-screen"); await loadHistorial(); });
+$("btn-back-hist").addEventListener("click",()=>showScreen("main-screen"));
+
+async function loadHistorial(){
+  const tbody=$("hist-tbody"),loading=$("hist-loading");
+  tbody.innerHTML=""; loading.style.display="block";
+  try{
+    const q=query(collection(db,"asistencia"),where("userId","==",currentUser.id),orderBy("timestamp","desc"));
+    const snap=await getDocs(q);
+    loading.style.display="none";
+    if(snap.empty){ tbody.innerHTML=`<tr><td colspan="5" style="text-align:center;opacity:.5;padding:2rem">Sin registros aún</td></tr>`; return; }
+    snap.forEach(doc=>{
+      const d=doc.data();
+      const tc=d.tipo==="INGRESO"?"#03b371":"#f59e0b";
+      const tr=document.createElement("tr");
+      tr.innerHTML=`
+        <td>${formatFecha(d.timestamp)}</td>
+        <td><span style="color:${tc};font-weight:700">${d.tipo||"—"}</span></td>
+        <td><span class="badge-base">${d.baseNombre}</span></td>
+        <td>${d.distancia} m</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:.68rem;color:var(--text2)">${d.deviceId||"—"}</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }catch(e){ loading.style.display="none"; tbody.innerHTML=`<tr><td colspan="5" style="color:#ef4444;padding:1rem">${e.message}</td></tr>`; }
+}
+
+// ── Admin ────────────────────────────────────────────────────
+$("btn-admin-link").addEventListener("click",()=>{
+  $("admin-pass-input").value=""; $("admin-pass-error").textContent="";
+  $("modal-admin-pass").classList.remove("hidden");
+  setTimeout(()=>$("admin-pass-input").focus(),100);
+});
+$("btn-admin-pass-cancel").addEventListener("click",()=>$("modal-admin-pass").classList.add("hidden"));
+$("btn-admin-pass-ok").addEventListener("click",()=>{
+  if($("admin-pass-input").value===ADMIN_PASS){
+    $("modal-admin-pass").classList.add("hidden");
+    // Mostrar info de vinculación de ESTE dispositivo
+    const vinc=getVinculacion();
+    $("admin-vinculacion").innerHTML=vinc
+      ? `Este dispositivo está vinculado a <b>${vinc.nombre}</b> (desde ${new Date(vinc.since).toLocaleDateString("es-PE")}). <button onclick="desvincularDispositivo()" style="background:rgba(239,68,68,.2);border:1px solid rgba(239,68,68,.4);color:#fca5a5;border-radius:6px;padding:.2rem .6rem;cursor:pointer;font-size:.75rem;font-family:inherit;margin-left:.5rem">Desvincular</button>`
+      : `<span style="color:var(--text2)">Este dispositivo no está vinculado a nadie todavía.</span>`;
+    $("admin-device-id").textContent=`ID de este dispositivo: ${DEVICE_ID}`;
+    showScreen("admin-screen");
+    loadAdminView();
+  } else { $("admin-pass-error").textContent="Contraseña incorrecta."; shake("modal-admin-pass"); }
+});
+$("btn-back-admin").addEventListener("click",()=>showScreen("main-screen"));
+$("btn-filter-admin").addEventListener("click",()=>loadAdminView());
+$("btn-export-csv").addEventListener("click",()=>exportCSV());
+
+let adminData=[];
+
+async function loadAdminView(){
+  const tbody=$("admin-tbody"),loading=$("admin-loading");
+  tbody.innerHTML=""; loading.style.display="block"; adminData=[];
+  const filtroUser=$("filter-user").value, filtroFecha=$("filter-fecha").value, filtroTipo=$("filter-tipo").value;
+  try{
+    const q=query(collection(db,"asistencia"),orderBy("timestamp","desc"));
+    const snap=await getDocs(q);
+    loading.style.display="none";
+    const seenUsers=new Set();
+    // Poblar filtro usuarios con los que existen en Firestore
+    const selU=$("filter-user"); const prevU=selU.value;
+    selU.innerHTML=`<option value="">Todos los trabajadores</option>`;
+
+    snap.forEach(doc=>{
+      const d={...doc.data(),docId:doc.id};
+      if(!seenUsers.has(d.userId)){ seenUsers.add(d.userId); const o=document.createElement("option"); o.value=d.userId; o.textContent=d.nombre; selU.appendChild(o); }
+      if(filtroUser&&d.userId!==filtroUser) return;
+      if(filtroTipo&&d.tipo!==filtroTipo) return;
+      if(filtroFecha){ const rd=d.timestamp.toDate().toISOString().slice(0,10); if(rd!==filtroFecha) return; }
+      adminData.push(d);
+    });
+    selU.value=prevU;
+
+    if(!adminData.length){ tbody.innerHTML=`<tr><td colspan="8" style="text-align:center;opacity:.5;padding:1.5rem">Sin registros para este filtro</td></tr>`; return; }
+
+    // Detectar deviceIds duplicados (chivato)
+    const deviceCount={};
+    adminData.forEach(d=>{ deviceCount[d.deviceId]=(deviceCount[d.deviceId]||0)+1; });
+
+    adminData.forEach(d=>{
+      const tc=d.tipo==="INGRESO"?"#03b371":"#f59e0b";
+      const isDup=deviceCount[d.deviceId]>2; // mismo dispositivo con 3+ marcajes distintos = sospechoso
+      const tr=document.createElement("tr");
+      if(isDup) tr.style.background="rgba(239,68,68,.07)";
+      tr.innerHTML=`
+        <td>${formatFecha(d.timestamp)}</td>
+        <td>${d.nombre}</td>
+        <td><span style="color:${tc};font-weight:700">${d.tipo||"—"}</span></td>
+        <td><span class="badge-base">${d.baseNombre}</span></td>
+        <td>${d.distancia} m</td>
+        <td>${d.dispositivo?.tipo||"?"} · ${d.dispositivo?.modelo||"?"}</td>
+        <td style="font-family:'JetBrains Mono',monospace;font-size:.68rem;${isDup?"color:#f87171;font-weight:700":"color:var(--text2)"}">${d.deviceId||"—"}${isDup?" ⚠️":""}</td>
+        <td>±${Math.round(d.accuracy||0)} m</td>
+      `;
+      tbody.appendChild(tr);
+    });
+  }catch(e){ loading.style.display="none"; tbody.innerHTML=`<tr><td colspan="8" style="color:#ef4444">${e.message}</td></tr>`; }
+}
+
+function exportCSV(){
+  if(!adminData.length) return;
+  const headers=["Fecha/Hora","Nombre","Cargo","Tipo","Base","Distancia(m)","Dispositivo","DeviceID","GPS±(m)"];
+  const rows=adminData.map(d=>[
+    formatFecha(d.timestamp),d.nombre,d.cargo,d.tipo||"",d.baseNombre,d.distancia,
+    `${d.dispositivo?.tipo||""} ${d.dispositivo?.modelo||""}`.trim(),
+    d.deviceId||"",Math.round(d.accuracy||0)
+  ].map(v=>`"${String(v).replace(/"/g,'""')}"`).join(","));
+  const csv="\uFEFF"+[headers.join(","),...rows].join("\n");
+  const blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download=`asistencia_MISAGI_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ── Logout ────────────────────────────────────────────────────
+$("btn-logout").addEventListener("click",()=>{ currentUser=null; $("user-select").value=""; showScreen("login-screen"); });
+
+// ── Modal bloqueo ────────────────────────────────────────────
+function showBlockModal(title,body){
+  $("block-title").textContent=title;
+  $("block-body").innerHTML=body;
+  $("modal-block").classList.remove("hidden");
+}
+$("btn-block-ok").addEventListener("click",()=>$("modal-block").classList.add("hidden"));
+
+</script>
+
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root{
+  --green:#028956;--green-dark:#016840;--green-light:#03b371;
+  --blue:#244083;--blue-light:#3358b8;--orange:#f59e0b;
+  --bg:#0d1117;--bg2:#161b22;--bg3:#1c2333;
+  --border:#30363d;--text:#e6edf3;--text2:#8b949e;
+  --error:#ef4444;--radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{font-family:'Sora',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;flex-direction:column;align-items:center;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;
+  background:radial-gradient(ellipse 70% 50% at 15% 5%,rgba(2,137,86,.15) 0%,transparent 70%),
+             radial-gradient(ellipse 60% 40% at 85% 95%,rgba(36,64,131,.18) 0%,transparent 70%);
+  pointer-events:none;z-index:0}
+
+.screen{position:relative;z-index:1;width:100%;max-width:480px;min-height:100vh;padding:1.25rem 1rem 4rem;display:flex;flex-direction:column;gap:1.1rem}
+.hidden{display:none!important}
+
+/* Header */
+.header{display:flex;align-items:center;gap:.75rem;padding:.75rem 0}
+.logo{width:40px;height:40px;border-radius:10px;background:linear-gradient(135deg,var(--green),var(--blue));display:flex;align-items:center;justify-content:center;font-size:1rem;font-weight:800;color:#fff;flex-shrink:0;box-shadow:0 0 22px rgba(2,137,86,.4)}
+.header-text h1{font-size:1rem;font-weight:700;line-height:1.2}
+.header-text p{font-size:.72rem;color:var(--text2)}
+
+/* Card */
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.4rem}
+
+/* Geo banner */
+.geo-banner{display:none;align-items:flex-start;gap:.75rem;border-radius:10px;padding:.85rem 1rem;font-size:.8rem;line-height:1.5}
+.geo-denied{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.4);color:#fca5a5}
+.geo-ok{background:rgba(2,137,86,.12);border:1px solid rgba(2,137,86,.4);color:var(--green-light)}
+.geo-icon{font-size:1.2rem;flex-shrink:0}
+
+/* Login */
+#login-card{display:flex;flex-direction:column;gap:1.2rem}
+.login-title{font-size:1.35rem;font-weight:800;background:linear-gradient(135deg,var(--green-light),#60a5fa);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.login-sub{font-size:.8rem;color:var(--text2)}
+label{display:block;font-size:.75rem;font-weight:700;color:var(--text2);margin-bottom:.4rem;text-transform:uppercase;letter-spacing:.04em}
+select,input[type=text],input[type=password],input[type=date]{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:8px;color:var(--text);font-family:inherit;font-size:.9rem;padding:.75rem 1rem;outline:none;transition:border-color .2s;-webkit-appearance:none}
+select:focus,input:focus{border-color:var(--green)}
+
+/* Buttons */
+.btn{width:100%;padding:.85rem 1rem;border-radius:10px;border:none;cursor:pointer;font-family:inherit;font-size:.93rem;font-weight:700;display:flex;align-items:center;justify-content:center;gap:.6rem;transition:all .2s}
+.btn-primary{background:linear-gradient(135deg,var(--green),var(--blue));color:#fff;box-shadow:0 4px 20px rgba(2,137,86,.35)}
+.btn-primary:hover:not(:disabled){transform:translateY(-1px);box-shadow:0 6px 28px rgba(2,137,86,.5)}
+.btn-primary:active:not(:disabled){transform:scale(.98)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed}
+.btn-secondary{background:transparent;border:1px solid var(--border);color:var(--text2)}
+.btn-secondary:hover{border-color:var(--green);color:var(--text)}
+.btn-ghost{background:transparent;border:none;color:var(--text2);font-size:.8rem;padding:.5rem;width:auto;cursor:pointer;font-family:inherit}
+.btn-ghost:hover{color:var(--text)}
+
+/* Welcome */
+.welcome-banner{background:linear-gradient(135deg,rgba(2,137,86,.12),rgba(36,64,131,.12));border:1px solid rgba(2,137,86,.25);border-radius:var(--radius);padding:1rem 1.25rem;display:flex;align-items:center;gap:1rem}
+.avatar{width:44px;height:44px;border-radius:50%;background:linear-gradient(135deg,var(--green),var(--blue));display:flex;align-items:center;justify-content:center;font-size:1.1rem;font-weight:800;color:#fff;flex-shrink:0}
+.welcome-text .name{font-weight:700;font-size:.95rem}
+.welcome-text .cargo{font-size:.75rem;color:var(--text2)}
+
+/* Bases */
+.bases-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.base-chip{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.85rem;display:flex;flex-direction:column;gap:.3rem}
+.base-chip .base-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s ease-in-out infinite}
+.base-chip .base-name{font-size:.76rem;font-weight:700;line-height:1.3}
+.base-chip .base-radio{font-size:.68rem;color:var(--text2);font-family:'JetBrains Mono',monospace}
+
+/* Marcaje */
+.marcaje-row{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.btn-ingreso{background:linear-gradient(135deg,var(--green),var(--green-dark));color:#fff;box-shadow:0 4px 20px rgba(2,137,86,.4)}
+.btn-ingreso:hover:not(:disabled){box-shadow:0 6px 28px rgba(2,137,86,.6);transform:translateY(-1px)}
+.btn-salida{background:linear-gradient(135deg,#b45309,#92400e);color:#fff;box-shadow:0 4px 20px rgba(180,83,9,.4)}
+.btn-salida:hover:not(:disabled){box-shadow:0 6px 28px rgba(180,83,9,.5);transform:translateY(-1px)}
+.btn-ingreso:disabled,.btn-salida:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* Result */
+.result-card{border-radius:var(--radius);padding:1.25rem;display:flex;flex-direction:column;gap:.45rem;animation:slideUp .3s ease}
+.result-card.success{background:rgba(2,137,86,.1);border:1px solid rgba(2,137,86,.35)}
+.result-card.error{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3)}
+.rc-icon{font-size:1.5rem;font-weight:800}
+.result-card.success .rc-icon{color:var(--green-light)}
+.result-card.error .rc-icon{color:var(--error)}
+.rc-title{font-size:1rem;font-weight:800;color:var(--green-light)}
+.rc-badge{display:inline-block;padding:.2rem .65rem;border-radius:99px;font-size:.72rem;font-weight:700;border:1px solid;width:fit-content}
+.rc-msg{font-size:.85rem;color:#fca5a5}
+.rc-detail{font-size:.78rem;color:var(--text2)}
+.rc-detail b{color:var(--text)}
+.rc-map-link{display:inline-block;margin-top:.2rem;font-size:.77rem;color:#60a5fa;text-decoration:none}
+.rc-map-link:hover{text-decoration:underline}
+
+/* PIN */
+#pin-card{display:flex;flex-direction:column;gap:1.1rem;align-items:center;text-align:center}
+.pin-title{font-size:1.1rem;font-weight:800}
+.pin-dots{display:flex;gap:.5rem;margin:.25rem 0}
+.dot{width:11px;height:11px;border-radius:50%;border:2px solid var(--border);background:transparent;transition:all .15s}
+.dot.filled{background:var(--green);border-color:var(--green);box-shadow:0 0 8px var(--green)}
+.pin-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:.6rem;width:100%;max-width:260px}
+.pin-btn{background:var(--bg3);border:1px solid var(--border);border-radius:10px;color:var(--text);font-family:'Sora',sans-serif;font-size:1.3rem;font-weight:700;padding:1rem;cursor:pointer;transition:all .15s}
+.pin-btn:hover{background:var(--bg2);border-color:var(--green)}
+.pin-btn:active{transform:scale(.92)}
+.pin-btn-del{font-size:.8rem;font-weight:600;color:var(--text2)}
+#pin-error{font-size:.78rem;color:var(--error);min-height:1.1rem}
+
+/* Tabla */
+.page-header{display:flex;align-items:center;gap:.75rem;padding:.5rem 0}
+.page-title{font-size:1.1rem;font-weight:800}
+.table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--border)}
+table{width:100%;border-collapse:collapse;font-size:.73rem;min-width:500px}
+thead tr{background:var(--bg3)}
+th{padding:.6rem .8rem;text-align:left;font-size:.67rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em;white-space:nowrap}
+td{padding:.6rem .8rem;border-top:1px solid var(--border);white-space:nowrap;font-family:'JetBrains Mono',monospace;font-size:.72rem}
+tr:hover td{background:rgba(255,255,255,.02)}
+.badge-base{background:rgba(2,137,86,.18);border:1px solid rgba(2,137,86,.4);color:var(--green-light);padding:.2rem .5rem;border-radius:99px;font-size:.66rem;font-weight:700;font-family:'Sora',sans-serif;white-space:nowrap}
+
+/* Admin extras */
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:.6rem}
+.filters select,.filters input{font-size:.8rem;padding:.55rem .75rem}
+.btn-row{display:flex;gap:.6rem}
+.btn-row .btn{flex:1;padding:.65rem;font-size:.82rem}
+.admin-info-box{background:var(--bg3);border:1px solid var(--border);border-radius:10px;padding:.85rem 1rem;font-size:.78rem;line-height:1.7;color:var(--text2)}
+.admin-info-box b{color:var(--text)}
+
+/* Divider */
+.divider{display:flex;align-items:center;gap:.75rem;font-size:.7rem;color:var(--text2)}
+.divider::before,.divider::after{content:'';flex:1;height:1px;background:var(--border)}
+
+/* Modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.72);backdrop-filter:blur(5px);z-index:100;display:flex;align-items:center;justify-content:center;padding:1.5rem}
+.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:var(--radius);padding:1.5rem;width:100%;max-width:340px;display:flex;flex-direction:column;gap:1rem}
+.modal-title{font-size:1rem;font-weight:800}
+.modal-sub{font-size:.82rem;color:var(--text2);line-height:1.6}
+.modal-btns{display:flex;gap:.6rem}
+.modal-btns .btn{flex:1;padding:.75rem;font-size:.85rem}
+#admin-pass-error{font-size:.75rem;color:var(--error);min-height:1rem}
+
+/* Animations */
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes shakeAnim{0%,100%{transform:translateX(0)}20%,60%{transform:translateX(-7px)}40%,80%{transform:translateX(7px)}}
+.shake{animation:shakeAnim .4s ease}
+.spinner{display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,.3);border-top-color:#fff;border-radius:50%;animation:spin .7s linear infinite}
+#hist-loading,#admin-loading{text-align:center;color:var(--text2);font-size:.82rem;padding:1.5rem}
+</style>
+</head>
+<body>
+
+<!-- ═══ LOGIN ═══ -->
+<div id="login-screen" class="screen">
+  <div class="header">
+    <div class="logo">M</div>
+    <div class="header-text"><h1>MISAGI S.A.C.</h1><p>Control de Asistencia</p></div>
+  </div>
+  <div id="geo-banner" class="geo-banner"></div>
+  <div id="login-card" class="card">
+    <div><div class="login-title">Bienvenido 👷</div><div class="login-sub">Selecciona tu nombre para continuar</div></div>
+    <div><label for="user-select">Trabajador</label>
+      <select id="user-select"><option value="">— Selecciona tu nombre —</option></select>
+    </div>
+    <button id="btn-login" class="btn btn-primary">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Continuar
+    </button>
+  </div>
+  <div class="divider">Bases registradas</div>
+  <div class="bases-grid">
+    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 1 — Cerro Colorado</div><div class="base-radio">Radio 500 m</div></div>
+    <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 2 — Cerro Colorado</div><div class="base-radio">Radio 500 m</div></div>
+  </div>
+</div>
+
+<!-- ═══ PIN ═══ -->
+<div id="pin-screen" class="screen hidden">
+  <div class="header">
+    <div class="logo">M</div>
+    <div class="header-text"><h1>MISAGI S.A.C.</h1><p>Verificación de identidad</p></div>
+  </div>
+  <div id="pin-card" class="card">
+    <div>
+      <div class="pin-title">🔐 Ingresa tu PIN</div>
+      <div id="pin-user-name" style="font-size:.85rem;color:var(--green-light);font-weight:700;margin-top:.3rem"></div>
+    </div>
+    <div id="pin-dots" class="pin-dots">
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      <div class="dot"></div><div class="dot"></div><div class="dot"></div><div class="dot"></div>
+    </div>
+    <div class="pin-pad">
+      <button class="pin-btn" data-digit="1">1</button>
+      <button class="pin-btn" data-digit="2">2</button>
+      <button class="pin-btn" data-digit="3">3</button>
+      <button class="pin-btn" data-digit="4">4</button>
+      <button class="pin-btn" data-digit="5">5</button>
+      <button class="pin-btn" data-digit="6">6</button>
+      <button class="pin-btn" data-digit="7">7</button>
+      <button class="pin-btn" data-digit="8">8</button>
+      <button class="pin-btn" data-digit="9">9</button>
+      <button class="pin-btn pin-btn-del" id="pin-btn-del">⌫</button>
+      <button class="pin-btn" data-digit="0">0</button>
+      <button class="pin-btn pin-btn-del" id="pin-back" style="font-size:.68rem">Volver</button>
+    </div>
+    <div id="pin-error"></div>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<div id="main-screen" class="screen hidden">
+  <div class="header">
+    <div class="logo">M</div>
+    <div class="header-text" style="flex:1"><h1>MISAGI S.A.C.</h1><p>Control de Asistencia</p></div>
+    <button id="btn-logout" class="btn-ghost">Salir</button>
+  </div>
+  <div class="welcome-banner">
+    <div class="avatar">👷</div>
+    <div class="welcome-text">
+      <div class="name" id="welcome-name">Usuario</div>
+      <div class="cargo" id="welcome-cargo">Cargo</div>
+    </div>
+  </div>
+  <div class="card" style="display:flex;flex-direction:column;gap:.85rem">
+    <div style="font-size:.7rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.06em">Bases activas</div>
+    <div class="bases-grid">
+      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 1</div><div class="base-radio">500 m · -16.3493</div></div>
+      <div class="base-chip"><div class="base-dot"></div><div class="base-name">Base 2</div><div class="base-radio">500 m · -16.3682</div></div>
+    </div>
+  </div>
+  <div class="marcaje-row">
+    <button id="btn-ingreso" class="btn btn-ingreso">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+      Marcar Ingreso
+    </button>
+    <button id="btn-salida" class="btn btn-salida">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      Marcar Salida
+    </button>
+  </div>
+  <div id="result-card" class="result-card hidden"></div>
+  <button id="btn-historial" class="btn btn-secondary">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>
+    Mi historial
+  </button>
+  <button id="btn-admin-link" class="btn" style="background:rgba(36,64,131,.15);border:1px dashed rgba(36,64,131,.5);color:var(--text2);font-size:.82rem">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    Panel Administrador
+  </button>
+</div>
+
+<!-- ═══ HISTORIAL ═══ -->
+<div id="hist-screen" class="screen hidden">
+  <div class="page-header">
+    <button id="btn-back-hist" class="btn-ghost" style="padding:.4rem">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="page-title">Mi Historial</div>
+  </div>
+  <p id="hist-loading" style="display:none;text-align:center;color:var(--text2);padding:2rem">Cargando…</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Fecha/Hora</th><th>Tipo</th><th>Base</th><th>Dist.</th><th>Device ID</th></tr></thead>
+      <tbody id="hist-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══ ADMIN ═══ -->
+<div id="admin-screen" class="screen hidden">
+  <div class="page-header">
+    <button id="btn-back-admin" class="btn-ghost" style="padding:.4rem">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+    </button>
+    <div class="page-title">Panel Admin</div>
+  </div>
+
+  <!-- Info de vinculación de este dispositivo -->
+  <div class="admin-info-box">
+    <div id="admin-vinculacion"></div>
+    <div id="admin-device-id" style="font-family:'JetBrains Mono',monospace;font-size:.72rem;margin-top:.3rem;color:var(--text2)"></div>
+  </div>
+
+  <!-- Leyenda chivato -->
+  <div style="background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);border-radius:10px;padding:.75rem 1rem;font-size:.77rem;color:#fca5a5;line-height:1.6">
+    ⚠️ Las filas en rojo indican <b>un mismo Device ID</b> usado para marcar a 3 o más trabajadores distintos — posible fraude de asistencia.
+  </div>
+
+  <div class="card" style="display:flex;flex-direction:column;gap:.75rem">
+    <div style="font-size:.7rem;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:.05em">Filtros</div>
+    <div class="filters">
+      <div><label>Trabajador</label><select id="filter-user"><option value="">Todos</option></select></div>
+      <div><label>Tipo</label>
+        <select id="filter-tipo"><option value="">Todos</option><option value="INGRESO">Ingreso</option><option value="SALIDA">Salida</option></select>
+      </div>
+      <div style="grid-column:1/-1"><label>Fecha</label><input type="date" id="filter-fecha"></div>
+    </div>
+    <div class="btn-row">
+      <button id="btn-filter-admin" class="btn btn-primary">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>Filtrar
+      </button>
+      <button id="btn-export-csv" class="btn btn-secondary">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Exportar CSV
+      </button>
+    </div>
+  </div>
+
+  <p id="admin-loading" style="display:none;text-align:center;color:var(--text2);padding:1.5rem">Cargando…</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Fecha/Hora</th><th>Nombre</th><th>Tipo</th><th>Base</th><th>Dist.</th><th>Dispositivo</th><th>Device ID ⚠️</th><th>GPS±</th></tr></thead>
+      <tbody id="admin-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ═══ MODAL: Bloqueo ═══ -->
+<div id="modal-block" class="modal-overlay hidden">
+  <div class="modal-box">
+    <div class="modal-title" id="block-title"></div>
+    <div class="modal-sub" id="block-body"></div>
+    <button id="btn-block-ok" class="btn btn-primary">Entendido</button>
+  </div>
+</div>
+
+<!-- ═══ MODAL: Admin pass ═══ -->
+<div id="modal-admin-pass" class="modal-overlay hidden">
+  <div id="modal-admin-pass-box" class="modal-box">
+    <div><div class="modal-title">🔒 Acceso Admin</div><div class="modal-sub">Ingresa la contraseña de administrador</div></div>
+    <input id="admin-pass-input" type="password" placeholder="Contraseña" autocomplete="off">
+    <div id="admin-pass-error"></div>
+    <div class="modal-btns">
+      <button id="btn-admin-pass-cancel" class="btn btn-secondary">Cancelar</button>
+      <button id="btn-admin-pass-ok" class="btn btn-primary">Ingresar</button>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
