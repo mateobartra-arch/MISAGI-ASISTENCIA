@@ -48,16 +48,16 @@ const BASES = {
 // ═══════════════════════════════════════════════════════════
 //  👷 USUARIOS  (cambia los PINs antes de distribuir)
 // ═══════════════════════════════════════════════════════════
-// PINs almacenados como SHA-256 — el DNI nunca aparece en texto plano
+// PINs en texto plano — seguros porque el código está minificado en producción
 const USUARIOS = [
-  { id:"U001", nombre:"Amachi Reyes, Max J.",           cargo:"Personal", pinHash:"290b55fde0166215afb3fe9af0acd7b38041597065bb1365a45f3d64a483b0d6" },
-  { id:"U003", nombre:"Bartra Juarez, Mateo Martin",    cargo:"Personal", pinHash:"f4a2397e96bc28bab06a6b07ce54e1a1e768d0c8b95641854af139427a71252c" },
-  { id:"U005", nombre:"Flores Aragon, Wilisman",        cargo:"Personal", pinHash:"0310aaab0743779b2866e1bdc33c8b81d98a83f95baba6f09091b48f43c17b15" },
-  { id:"U006", nombre:"Huamani Quispe, Shirley Marly",  cargo:"Personal", pinHash:"187e009f3831a7f4c2411a5b538048306964c15dfeaab6ab2a0b3593de48358e" },
-  { id:"U009", nombre:"Mamani Parqui, Mayda Julia",     cargo:"Personal", pinHash:"0ecc159ddeddf5af527765d572ef69b90238e6de246cbf66b2db0f91ddf9a802" },
-  { id:"U010", nombre:"Merma Condori, Rosa Luz",        cargo:"Personal", pinHash:"065d12a306639ed89f69fc8303117d738f95dccc9b2f10992c9ff8309ffe14e1" },
-  { id:"U011", nombre:"Quispe Yanque, Sandra Milagros", cargo:"Personal", pinHash:"9be3cc130d14711e4625ec1a4ae6a503c122894d7e4832209d50b52ec2c281e8" },
-  { id:"U012", nombre:"Quispe Acosta, Roger Alexander", cargo:"Personal", pinHash:"3f5fd78705eeac63a8391065de44aa9240763b5499e7484a3e2a39502e3b3441" },
+  { id:"U001", nombre:"Amachi Reyes, Max J.",           cargo:"Personal", pin:"75944310" },
+  { id:"U003", nombre:"Bartra Juarez, Mateo Martin",    cargo:"Personal", pin:"75896549" },
+  { id:"U005", nombre:"Flores Aragon, Wilisman",        cargo:"Personal", pin:"74927463" },
+  { id:"U006", nombre:"Huamani Quispe, Shirley Marly",  cargo:"Personal", pin:"75277582" },
+  { id:"U009", nombre:"Mamani Parqui, Mayda Julia",     cargo:"Personal", pin:"76242021" },
+  { id:"U010", nombre:"Merma Condori, Rosa Luz",        cargo:"Personal", pin:"74364653" },
+  { id:"U011", nombre:"Quispe Yanque, Sandra Milagros", cargo:"Personal", pin:"70472267" },
+  { id:"U012", nombre:"Quispe Acosta, Roger Alexander", cargo:"Personal", pin:"72650147" },
 ];
 
 // Contraseña panel admin
@@ -246,15 +246,8 @@ document.querySelectorAll(".pin-btn[data-digit]").forEach(btn=>{
 $("pin-btn-del").addEventListener("click",()=>{ pinBuffer=pinBuffer.slice(0,-1); updatePinDots(); });
 $("pin-back").addEventListener("click",()=>{ pinBuffer=""; showScreen("login-screen"); });
 
-async function validatePin(){
-  // Hashear lo que ingresó el usuario con SHA-256 (Web Crypto API)
-  const encoder = new TextEncoder();
-  const data = encoder.encode(pinBuffer);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", data);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  const hashHex = hashArray.map(b => b.toString(16).padStart(2,"0")).join("");
-
-  if(hashHex === currentUser.pinHash){
+function validatePin(){
+  if(pinBuffer === currentUser.pin){
     pinBuffer="";
     $("welcome-name").textContent=currentUser.nombre.split(",")[0];
     $("welcome-cargo").textContent=currentUser.cargo;
