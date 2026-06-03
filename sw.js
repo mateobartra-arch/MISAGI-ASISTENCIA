@@ -4,7 +4,7 @@
 //  y funcione offline con el mensaje de "sin conexión".
 // ═══════════════════════════════════════════════════════════
 
-const CACHE_NAME = "misagi-asistencia-v1";
+const CACHE_NAME = "misagi-asistencia-v3";
 
 // Archivos que se cachean al instalar
 const PRECACHE_URLS = [
